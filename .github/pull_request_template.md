@@ -6,3 +6,5 @@ Checklist:
 
 - [ ] I added a summary of any user-facing changes (compared to the last release) in the `changelog-entries/<PRnumber>.md`.
 - [ ] I will remember to squash-and-merge, providing a useful summary of the changes of this PR.
+
+For **release PRs** (new distribution): update `tools/tests/requirements-reference.txt` if `reference_versions.yaml` changed (`python3 tools/tests/update_requirements_reference.py`).
