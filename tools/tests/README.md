@@ -20,7 +20,7 @@ The main workflow for the user is executing the `systemtests.py` script. Dependi
 
 Workflow for the preCICE v3 release testing:
 
-1. Collect the Git commits/tags of all components you want to test. The caching mechanism cannot detect changes based on branch names. The same effect might be encountered when rebasing and force-pushing the release branch.
+1. Collect the Git references of all components you want to test. You may pass branch names, tags, or commits. Branch names are resolved to immutable commits before builds to keep results reproducible and cache-safe.
 2. In your terminal, navigate to the tutorials repository
 3. Trigger the GitHub Actions Workflow. Until we merge the workflow to develop, this can only happen via the [GitHub CLI](https://cli.github.com/):
 
@@ -68,7 +68,7 @@ Another example, to use the latest releases and enable debug information of the 
 gh workflow run run_testsuite_manual.yml -f suites=fenics_test -f build_args="PRECICE_REF:v3.1.1,PRECICE_PRESET:production-audit,OPENFOAM_ADAPTER_REF:v1.3.0,PYTHON_BINDINGS_REF:v3.1.0,FENICS_ADAPTER_REF:v2.1.0,SU2_VERSION:7.5.1,SU2_ADAPTER_REF:64d4aff,DEALII_ADAPTER_REF:02c5d18,TUTORIALS_REF:340b447" -f log_level=DEBUG --ref=develop
 ```
 
-where the `*_REF` should be a specific [commit-ish](https://git-scm.com/docs/gitglossary#Documentation/gitglossary.txt-aiddefcommit-ishacommit-ishalsocommittish).
+where each `*_REF` can be any [commit-ish](https://git-scm.com/docs/gitglossary#Documentation/gitglossary.txt-aiddefcommit-ishacommit-ishalsocommittish) (branch, tag, or commit). Branch values are resolved to commits before image builds.
 
 Example output:
 
@@ -298,7 +298,9 @@ This `openfoam-adapter` component has the following attributes:
 
 Since the docker containers are still a bit mixed in terms of capabilities and support for different build_argument combinations the following rules apply:
 
-- A build_argument ending in **_REF** means that it refers to a git commit-ish (like a tag or commit) beeing used to build the image. Its important to not use branch names here as we heavily rely on dockers build cache to speedup things. But since the input variable to the docker builder will not change, we might have wrong cache hits.
+- A build_argument ending in **_REF** means that it refers to a git commit-ish (branch, tag, or commit) used to build the image.
+- If a branch name is provided, systemtests resolve it to a concrete commit before building. This keeps docker cache invalidation and run reproducibility reliable while still allowing convenient branch-based inputs.
+- If a corresponding `*_PR` argument is set, it takes precedence and the checkout uses `FETCH_HEAD`.
 - All other build_arguments are free of rules and up to the container maintainer.
 
 ### Component templates

@@ -3,6 +3,7 @@ from typing import List, Dict, Optional
 from jinja2 import Environment, FileSystemLoader
 from dataclasses import dataclass, field
 import shutil
+import json
 from pathlib import Path
 from paths import PRECICE_REL_OUTPUT_DIR, PRECICE_TOOLS_DIR, PRECICE_REL_REFERENCE_DIR, PRECICE_TESTS_DIR, PRECICE_TUTORIAL_DIR
 
@@ -21,6 +22,30 @@ import os
 
 GLOBAL_TIMEOUT = 900
 SHORT_TIMEOUT = 10
+
+GIT_REF_TO_REPOSITORY = {
+    "PRECICE_REF": "https://github.com/precice/precice.git",
+    "OPENFOAM_ADAPTER_REF": "https://github.com/precice/openfoam-adapter.git",
+    "CALCULIX_ADAPTER_REF": "https://github.com/precice/calculix-adapter.git",
+    "SU2_ADAPTER_REF": "https://github.com/precice/su2-adapter.git",
+    "DEALII_ADAPTER_REF": "https://github.com/precice/dealii-adapter.git",
+    "DUMUX_ADAPTER_REF": "https://github.com/precice/dumux-adapter.git",
+    "PYTHON_BINDINGS_REF": "https://github.com/precice/python-bindings.git",
+    "FENICS_ADAPTER_REF": "https://github.com/precice/fenics-adapter.git",
+    "TUTORIALS_REF": "https://github.com/precice/tutorials.git",
+}
+
+PR_TO_REF_KEY = {
+    "PRECICE_PR": "PRECICE_REF",
+    "OPENFOAM_ADAPTER_PR": "OPENFOAM_ADAPTER_REF",
+    "CALCULIX_ADAPTER_PR": "CALCULIX_ADAPTER_REF",
+    "SU2_ADAPTER_PR": "SU2_ADAPTER_REF",
+    "DEALII_ADAPTER_PR": "DEALII_ADAPTER_REF",
+    "DUMUX_ADAPTER_PR": "DUMUX_ADAPTER_REF",
+    "TUTORIALS_PR": "TUTORIALS_REF",
+}
+
+GIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
 
 def slugify(value, allow_unicode=False):
@@ -135,6 +160,8 @@ class Systemtest:
     case_combination: CaseCombination
     reference_result: ReferenceResult
     params_to_use: Dict[str, str] = field(init=False)
+    requested_params_to_use: Dict[str, str] = field(init=False)
+    resolved_refs: Dict[str, str] = field(init=False)
     env: Dict[str, str] = field(init=False)
 
     def __eq__(self, other) -> bool:
@@ -161,7 +188,7 @@ class Systemtest:
 
         # Forward all provided arguments to params_to_use
         provided_arguments = self.arguments.arguments
-        self.params_to_use = provided_arguments
+        self.params_to_use = dict(provided_arguments)
 
         # Find out which parameters are needed
         needed_parameters = set()
@@ -174,6 +201,64 @@ class Systemtest:
                 logging.warning(
                     f"No argument provided for needed parameter {needed_param.key}. Substituting with {needed_param.default}")
                 self.params_to_use[needed_param.key] = needed_param.default
+
+        self.requested_params_to_use = dict(self.params_to_use)
+        self.resolved_refs = {}
+        self.__normalize_ref_arguments()
+
+    def _resolve_git_ref_to_commit(self, repository: str, ref: str) -> str:
+        if ref == "FETCH_HEAD" or GIT_SHA_PATTERN.fullmatch(ref):
+            return ref
+
+        try:
+            result = subprocess.run(
+                ["git", "ls-remote", repository, ref],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=True,
+                timeout=60,
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to resolve git ref '{ref}' for repository '{repository}': {e}"
+            ) from e
+
+        lines = [line for line in result.stdout.strip().splitlines() if line.strip()]
+        if not lines:
+            raise RuntimeError(
+                f"Could not resolve git ref '{ref}' for repository '{repository}'."
+            )
+
+        resolved_commit = lines[0].split()[0]
+        if not GIT_SHA_PATTERN.fullmatch(resolved_commit):
+            raise RuntimeError(
+                f"Resolved ref '{ref}' for repository '{repository}' returned invalid commit '{resolved_commit}'."
+            )
+        return resolved_commit
+
+    def __normalize_ref_arguments(self):
+        # PR refs are authoritative and should always override *_REF.
+        for pr_key, ref_key in PR_TO_REF_KEY.items():
+            pr_value = self.params_to_use.get(pr_key)
+            if pr_value:
+                logging.debug(f"Using {pr_key}={pr_value}, overriding {ref_key} with FETCH_HEAD.")
+                self.params_to_use[ref_key] = "FETCH_HEAD"
+                self.resolved_refs[ref_key] = "FETCH_HEAD"
+
+        for ref_key, repository in GIT_REF_TO_REPOSITORY.items():
+            ref_value = self.params_to_use.get(ref_key)
+            if not ref_value:
+                continue
+            if ref_key in self.resolved_refs:
+                continue
+            resolved_ref = self._resolve_git_ref_to_commit(repository, ref_value)
+            self.params_to_use[ref_key] = resolved_ref
+            self.resolved_refs[ref_key] = resolved_ref
+            if resolved_ref != ref_value:
+                logging.debug(
+                    f"Resolved {ref_key} from '{ref_value}' to commit '{resolved_ref}'."
+                )
 
     def __get_docker_services(self) -> Dict[str, str]:
         """
@@ -304,11 +389,21 @@ class Systemtest:
             logging.debug(f"Fetching the PR {pr_requested} HEAD reference")
             self._fetch_pr(PRECICE_TUTORIAL_DIR, pr_requested)
         current_ref = self._get_git_ref(PRECICE_TUTORIAL_DIR)
-        ref_requested = self.params_to_use.get("TUTORIALS_REF")
-        if ref_requested:
-            logging.debug(f"Checking out tutorials {ref_requested} before copying")
-            self._fetch_ref(PRECICE_TUTORIAL_DIR, ref_requested)
-            self._checkout_ref_in_subfolder(PRECICE_TUTORIAL_DIR, self.tutorial.path, ref_requested)
+        requested_tutorial_ref = self.requested_params_to_use.get("TUTORIALS_REF")
+        resolved_tutorial_ref = self.params_to_use.get("TUTORIALS_REF")
+        if resolved_tutorial_ref:
+            logging.debug(
+                f"Checking out tutorials {resolved_tutorial_ref} before copying"
+                + (
+                    f" (requested: {requested_tutorial_ref})"
+                    if requested_tutorial_ref and requested_tutorial_ref != resolved_tutorial_ref
+                    else ""
+                )
+            )
+            self._fetch_ref(PRECICE_TUTORIAL_DIR, resolved_tutorial_ref)
+            self._checkout_ref_in_subfolder(
+                PRECICE_TUTORIAL_DIR, self.tutorial.path, resolved_tutorial_ref
+            )
 
         self.tutorial_folder = slugify(f'{self.tutorial.path.name}_{self.case_combination.cases}_{current_time_string}')
         destination = run_directory / self.tutorial_folder
@@ -316,9 +411,12 @@ class Systemtest:
         self.system_test_dir = destination
         shutil.copytree(src, destination)
 
-        if ref_requested:
+        if resolved_tutorial_ref:
             with open(destination / "tutorials_ref", 'w') as file:
-                file.write(ref_requested)
+                file.write(resolved_tutorial_ref)
+            if requested_tutorial_ref and requested_tutorial_ref != resolved_tutorial_ref:
+                with open(destination / "tutorials_ref_requested", 'w') as file:
+                    file.write(requested_tutorial_ref)
             self._checkout_ref_in_subfolder(PRECICE_TUTORIAL_DIR, self.tutorial.path, current_ref)
 
     def __copy_tools(self, run_directory: Path):
@@ -352,6 +450,18 @@ class Systemtest:
         with open(self.system_test_dir / ".env", "w") as env_file:
             for key, value in self.env.items():
                 env_file.write(f"{key}={value}\n")
+
+    def __write_ref_traceability(self):
+        requested_path = self.system_test_dir / "build_args.requested.json"
+        resolved_path = self.system_test_dir / "build_args.resolved.json"
+        refs_path = self.system_test_dir / "resolved_git_refs.json"
+
+        with open(requested_path, "w") as file:
+            json.dump(self.requested_params_to_use, file, indent=2, sort_keys=True)
+        with open(resolved_path, "w") as file:
+            json.dump(self.params_to_use, file, indent=2, sort_keys=True)
+        with open(refs_path, "w") as file:
+            json.dump(self.resolved_refs, file, indent=2, sort_keys=True)
 
     def __unpack_reference_results(self):
         with tarfile.open(self.reference_result.path) as reference_results_tared:
@@ -523,6 +633,7 @@ class Systemtest:
         host_uid, host_gid = self.__get_uid_gid()
         self.params_to_use['PRECICE_UID'] = host_uid
         self.params_to_use['PRECICE_GID'] = host_gid
+        self.__write_ref_traceability()
 
     def run(self, run_directory: Path):
         """
