@@ -117,6 +117,9 @@ In order for the systemtests to pick up the tutorial we need to define a `metada
 
 To add a testsuite just open the `tests.yaml` file and use the output of `python print_case_combinations.py` to add the right case combinations you want to test. Note that you can specify a `reference_result` which is not yet present. The `generate_reference_data.py` will pick that up and create it for you.
 Note that its important to carefully check the paths of the `reference_result` in order to not have typos in there. Also note that same cases in different testsuites should use the same `reference_result`.
+For a quick coverage overview while planning additions, see
+`tools/tests/system-tests-coverage-matrix.md` (tracked in
+[#448](https://github.com/precice/tutorials/issues/448)).
 
 To cap the preCICE simulation time for a specific test without editing `precice-config.xml`, add an optional `max_time` (positive float, overrides `<max-time>`) or `max_time_windows` (positive integer, overrides `<max-time-windows>`) field to the tutorial entry. Applies to both test runs and reference result generation.
 
